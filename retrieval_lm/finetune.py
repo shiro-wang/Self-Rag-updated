@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from typing import Optional, Dict, Sequence
 import json
+from datetime import datetime
 
 import transformers
 from transformers import (
@@ -31,7 +32,8 @@ from transformers import (
     get_scheduler,
     GPTNeoXTokenizerFast,
     GPT2Tokenizer,
-    OPTForCausalLM
+    OPTForCausalLM,
+    PreTrainedTokenizerFast
 )
 from peft import LoraConfig, TaskType, get_peft_model
 
@@ -216,6 +218,12 @@ def parse_args():
             "Use special tokens."
         ),
     )
+    parser.add_argument(
+        "--logging_name",
+        type=str,
+        default="tuning-logging",
+        help="The name of the logging file."
+    )
 
     args = parser.parse_args()
 
@@ -238,7 +246,7 @@ def _tokenize_fn(text: str, tokenizer: transformers.PreTrainedTokenizer, max_seq
             truncation=True,
     ).input_ids
     input_ids_lens = labels_lens = input_ids.ne(tokenizer.pad_token_id).sum().item()
-    print(input_ids_lens)
+    # print(input_ids_lens)
 
     return dict(
         input_ids=input_ids,
@@ -371,10 +379,13 @@ def main():
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
 
     # Make one log on every process with the configuration for debugging.
+    fname = os.path.join("logging",  datetime.now().strftime('%Y-%m-%d') + args.logging_name + ".log")
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
+        level=logging.DEBUG,
+        filename=fname,
+        filemode='a',
     )
     logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
@@ -445,7 +456,9 @@ def main():
 
     # no default pad token for llama!
     # here we add all special tokens again, because the default ones are not in the special_tokens_map
-    if isinstance(tokenizer, LlamaTokenizer) or isinstance(tokenizer, LlamaTokenizerFast):
+
+    # print(type(tokenizer))
+    if isinstance(tokenizer, LlamaTokenizer) or isinstance(tokenizer, LlamaTokenizerFast) or isinstance(tokenizer, PreTrainedTokenizerFast):
         if args.use_special_tokens is True:
             special_token_dict = {"additional_special_tokens": ["[No Retrieval]", "[Retrieval]", "[Continue to Use Evidence]", "[Irrelevant]", "[Relevant]", "<paragraph>", "</paragraph>", "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]", "[Fully supported]", "[Partially supported]", "[No support / Contradictory]"]}
         special_token_dict["bos_token"] = "<s>"
@@ -471,9 +484,10 @@ def main():
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
+    # embedding_size = model.get_input_embeddings().weight.shape[0]
+    # if len(tokenizer) > embedding_size:
+    model.resize_token_embeddings(len(tokenizer))
+
 
     if args.use_lora:
         logger.info("Initializing LORA model...")
@@ -502,6 +516,7 @@ def main():
     #         tokenizer=tokenizer,
     #         max_seq_length=args.max_seq_length,
     #     )
+
     with accelerator.main_process_first():
         lm_datasets = raw_datasets.map(
             encode_function,
@@ -515,22 +530,31 @@ def main():
         lm_datasets = lm_datasets.filter(lambda example: (example['labels'] != -100).any())
 
     train_dataset = lm_datasets["train"]
-    print(train_dataset[0])
-    print(train_dataset[1000])
-    print(train_dataset[500])
-    print(train_dataset[2000])
-    print(train_dataset[10000])
-    with open("processed.json", "w") as outfile:
-        new_data = []
-        for item in train_dataset:
-            print(item)
-            labels = [int(i) for i in item["labels"]]
-            input_ids = [int(i) for i in item["input_ids"]]
-            new_data.append({"labels": labels, "input_ids": input_ids})
-        json.dump(new_data, outfile)
+    # print(train_dataset[0])
+    # print(train_dataset[1000])
+    # print(train_dataset[500])
+    # print(train_dataset[2000])
+    # print(train_dataset[10000])
+    # with open("processed.json", "w") as outfile:
+    #     new_data = []
+    #     for item in train_dataset:
+    #         # print(item)
+    #         labels = [int(i) for i in item["labels"]]
+    #         input_ids = [int(i) for i in item["input_ids"]]
+    #         attention_mask = [int(i) for i in item["attention_mask"]]
+    #         new_data.append({"labels": labels, "input_ids": input_ids, "attention_mask": attention_mask})
+    #     json.dump(new_data, outfile)
+            
     # Log a few random samples from the training set:
-    for index in random.sample(range(len(train_dataset)), 3):
-        logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
+    # for index in random.sample(range(len(train_dataset)), 2):
+        # print(f"Sample {index} of the training set: {train_dataset[index]}.")
+        # print(f"Sample {index} of the training set keys: {train_dataset[index].keys()}.")
+        # print(f"Sample {index} of the training set input_ids' length: {len(train_dataset[index]['input_ids'])}.")
+        # print(f"Sample {index} of the training set labels' length: {len(train_dataset[index]['labels'])}.")
+    assert torch.max(train_dataset[0]["input_ids"]) < model.config.vocab_size, "Input IDs exceed vocabulary size!"
+    # if torch.all(train_dataset[0]['attention_mask'] == 1):
+    #     print("All attention masks are 1.")
+    # print(torch.all(train_dataset[0]['attention_mask'] == 1))
 
     # DataLoaders creation:
     train_dataloader = DataLoader(
@@ -578,6 +602,8 @@ def main():
     )
 
     # Prepare everything with `accelerator`.
+    print("Accelerator device:")
+    print(accelerator.device)
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler
     )
@@ -643,6 +669,7 @@ def main():
     # update the progress_bar if load from checkpoint
     progress_bar.update(starting_epoch * num_update_steps_per_epoch)
     completed_steps = starting_epoch * num_update_steps_per_epoch
+    
 
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
@@ -657,14 +684,18 @@ def main():
                     continue
 
             with accelerator.accumulate(model):
-                outputs = model(**batch, use_cache=False)
-                loss = outputs.loss
-                # We keep track of the loss at each logged step
-                total_loss += loss.detach().float()
-                accelerator.backward(loss)
-                optimizer.step()
-                optimizer.zero_grad()
-                lr_scheduler.step()       
+                try:
+                    outputs = model(**batch, use_cache=False)
+                    loss = outputs.loss
+                    # We keep track of the loss at each logged step
+                    total_loss += loss.detach().float()
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    lr_scheduler.step()
+                except Exception as e:
+                    logger.error(f"Error in step {step} of epoch {epoch}: {e}")
+                    exit(1)
 
             # # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -698,7 +729,7 @@ def main():
             if args.output_dir is not None:
                 output_dir = os.path.join(args.output_dir, output_dir)
             accelerator.save_state(output_dir)
-
+    print("Training done.")
     if args.with_tracking:
         accelerator.end_training()
 

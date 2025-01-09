@@ -10,7 +10,6 @@ import torch
 import os
 import numpy as np
 import openai
-from tqdm import tqdm
 import json
 import argparse
 import ast
@@ -56,7 +55,7 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
     if mode != "always_retrieve":
         sampling_params = SamplingParams(
             temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=32016)
-        preds = model.generate([prompt], sampling_params)
+        preds = model.generate([prompt], sampling_params, use_tqdm=False)
         pred_token_ids = preds[0].outputs[0].token_ids
         pred_text = preds[0].outputs[0].text
         pred_log_probs = preds[0].outputs[0].logprobs
@@ -82,12 +81,13 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
         else:
             do_retrieve = "[Retrieval]" in pred
 
+    evidence_augmented_inputs = []
     if do_retrieve is True:
         evidence_augmented_inputs = [prompt + "[Retrieval]<paragraph>{0}\n{1}</paragraph>".format(
             para["title"], para["text"]) for para in evidences]
         sampling_params = SamplingParams(
             temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=5000)
-        preds = model.generate(evidence_augmented_inputs, sampling_params)
+        preds = model.generate(evidence_augmented_inputs, sampling_params, use_tqdm=False)
 
         relevance_score_dict = {}
         grd_score_dict = {}
@@ -162,22 +162,22 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
                                      "utility_score": utility_score,
                                      "relevance_score_dict": relevance_score_dict,
                                      "grd_score_dict": grd_score_dict,
-                                     "ut_score_dict": utility_score}
+                                     "ut_score_dict": ut_score_dict}
             results["retrieval_{}".format(p_idx)] = {
-                "pred": pred_text, "score": final_score, "ctx": evidences[p_idx]}
+                "pred": pred_text, "score": final_score, "ctx": evidences[p_idx], "overall_scores": overall_scores[p_idx]}
 
     else:
         sampling_params = SamplingParams(
             temperature=0.0, top_p=1.0, max_tokens=max_new_tokens)
         prompt += "[No Retrieval]"
-        preds = model.generate([prompt], sampling_params)
+        preds = model.generate([prompt], sampling_params, use_tqdm=False)
 
         pred = preds[0].outputs[0].text
 
     # Aggregating answers
     if len(results) == 1:
         postprocessed_pred = postprocess_answer_option_conditioned(pred)
-        return postprocessed_pred, results, do_retrieve
+        return postprocessed_pred, results, do_retrieve, evidence_augmented_inputs, 
     else:
         answer2score = {}
         if closed is True:
@@ -197,7 +197,7 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
             best_path = sorted(path2score.items(),
                                key=lambda x: x[1], reverse=True)[0][0]
             best_option = results[best_path]["pred"]
-        return best_option, results, do_retrieve
+        return best_option, results, do_retrieve, evidence_augmented_inputs
 
 
 def process_data_evidences(demonstration, top_n):
@@ -312,7 +312,7 @@ def main():
     def generate(prompt, evidences, max_new_tokens):
         return call_model_rerank_w_scores_batch(prompt, evidences=evidences, model=model, max_new_tokens=max_new_tokens,
                                                 rel_tokens=rel_tokens, ret_tokens=ret_tokens, grd_tokens=grd_tokens, ut_tokens=ut_tokens,
-                                                threshold=args.threshold, max_depth=args.max_depth, use_seqscore=args.use_seqscore,
+                                                threshold=args.threshold, use_seqscore=args.use_seqscore,
                                                 w_rel=args.w_rel, w_sup=args.w_sup, w_use=args.w_use, mode=args.mode, closed=args.task in ["fever", "arc_c"])
 
     preds = []
@@ -321,20 +321,28 @@ def main():
     metric_results = []
     scores = []
     all_results = []
+    do_retrieve_judge = []
+    evidence_augmented_inputs = []
     count = 0
-    for i, row in tqdm(enumerate(input_data)):
+    progress_bar = tqdm(range(len(input_data[:35])))
+    for i, row in enumerate(input_data[:35]):
+        progress_bar.update(1)
         results = {}
         prompt = PROMPT_DICT["prompt_no_input"].format_map(row)
         _, evidences = process_data_evidences(row, top_n=args.ndocs)
-        pred, results, do_retrieve = generate(
+        pred, results, do_retrieve, evidence_augmented_input = generate(
             prompt, evidences, max_new_tokens=args.max_new_tokens,)
         if type(pred) is str and pred[0] == "#" or pred[0] == ":":
             pred = pred[1:]
         prompts.append(prompt)
         preds.append(pred)
+        evidence_augmented_inputs.append(evidence_augmented_input)
         all_results.append(results)
         if do_retrieve is True:
             count += 1
+            do_retrieve_judge.append(1)
+        else:
+            do_retrieve_judge.append(0)
         if "answers" not in row and "answer" in row:
             row["answers"] = [row["answer"]] if type(
                 row["answer"]) is str else row["answer"]
@@ -351,15 +359,19 @@ def main():
             raise NotImplementedError
 
         metric_results.append(metric_result)
+        golds.append(row["answers"])
+        
         if i % 10 == 0:
-            print("average: {}".format(np.mean(metric_results)))
+            # print("average: {}".format(np.mean(metric_results)))
             final_results = {"preds": preds, "prompts": prompts, "metric_results": metric_results, "all_results": all_results,
-                             "golds": golds,  "metric":  args.metric, "metric_mean": np.mean(metric_results), "scores": scores}
+                             "golds": golds,  "metric":  args.metric, "metric_mean": np.mean(metric_results), "scores": scores, 
+                             "do_retrieve_judge": do_retrieve_judge, "evidence_augmented_inputs": evidence_augmented_inputs}
             with open(args.output_file + "_tmp", "w") as outfile:
                 json.dump(final_results, outfile)
 
     final_results = {"preds": preds, "prompts": prompts, "metric_results": metric_results, "all_results": all_results,
-                     "golds": golds,  "metric":  args.metric, "metric_mean": np.mean(metric_results), "scores": scores}
+                     "golds": golds,  "metric":  args.metric, "metric_mean": np.mean(metric_results), "scores": scores,
+                     "do_retrieve_judge": do_retrieve_judge, "evidence_augmented_inputs": evidence_augmented_inputs}
     with open(args.output_file, "w") as outfile:
         json.dump(final_results, outfile)
 
