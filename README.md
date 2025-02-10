@@ -113,7 +113,16 @@ skip
     - Next stage: The error is caused by transformers or accelerate packages. Try to directly update the version. If still not be solved, move to A100 to train 7B model without any editing.
 - try 2nd:
     - Original: transformers=4.43.1, accelerate=1.0.1
-    - update: transformers=4.46.3, accelerate=1.0.1 => solving
+    - update: transformers=4.46.3, accelerate=1.0.1 => solved
+
+---
+- dec: accelerator.wait_for_everyone() runtimeerror: default process group has not been initialized, please make sure to call init_process_group.
+- problem: acclerator version problem, may be fixed in latest version.(1.2.1)
+- try:
+  - wanna update accelerate==1.2.1, python version must >= 3.9.0
+  - conda install python=3.9.18
+  
+
 
 
 # Inference

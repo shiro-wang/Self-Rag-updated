@@ -4,58 +4,69 @@ from utils import load_jsonlines
 from run_short_form import preprocess_input_data
 
 def main():
-    eval0_2_path = "../../../../dataspace/P76124574/SELF-RAG/eval_output/popqa_longtail_w_gs_trs0-2-35.json"
-    eval0_5_path = "../../../../dataspace/P76124574/SELF-RAG/eval_output/popqa_longtail_w_gs_trs0-5-35.json"
+    cmp1_path = "../../../../dataspace/P76124574/SELF-RAG/eval_output/popqa_longtail_w_gs_retprob_force100.json"
+    cmp2_path = "../../../../dataspace/P76124574/SELF-RAG/eval_output/popqa_longtail_w_gs_retprob.json"
     # eval0_8_path = "../../../dataspace/P76124574/SELF-RAG/eval_output/popqa_longtail_w_gs_trs0-8.json"
     # eval_path = "../../../../dataspace/P76124574/SELF-RAG/eval_data/popqa_longtail_w_gs.jsonl"
     
-    eval0_2 = json.load(open(eval0_2_path))
-    eval0_5 = json.load(open(eval0_5_path))
+    cmp1 = json.load(open(cmp1_path))
+    cmp2 = json.load(open(cmp2_path))
     # eval0_8 = json.load(open(eval0_8_path))
     # eval = load_jsonlines(eval_path)
     
-    # print("0.2 metric_mean: ", eval0_2["metric_mean"])
-    # print("0.5 metric_mean: ", eval0_5["metric_mean"])
+    # print("cmp1 metric_mean: ", cmp1["metric_mean"])
+    # print("cmp2 metric_mean: ", cmp2["metric_mean"])
     # print("0.8 metric_mean: ", eval0_8["metric_mean"])
     # print()
     
-    # print("0.2 metric_results: ", eval0_2["metric_results"][:5])
-    # print("0.5 metric_results: ", eval0_5["metric_results"][:5])
+    # print("cmp1 metric_results: ", cmp1["metric_results"][:5])
+    # print("cmp2 metric_results: ", cmp2["metric_results"][:5])
     # print("0.8 metric_results: ", eval0_8["metric_results"][:5])
     
     fail_to_correct = []
     correct_to_fail = []
-    for idx, (eval0_2_item, eval0_5_item) in enumerate(zip(eval0_2["metric_results"], eval0_5["metric_results"])):
-        if eval0_2_item == 0 and eval0_5_item == 1:
+    for idx, (cmp1_item, cmp2_item) in enumerate(zip(cmp1["metric_results"], cmp2["metric_results"])):
+        if cmp1_item == 0 and cmp2_item == 1:
             # avoid retrieve to improve performance
             correct_to_fail.append(idx)
-        elif eval0_2_item == 1 and eval0_5_item == 0:
+        elif cmp1_item == 1 and cmp2_item == 0:
             # avoid retrieve to disminish performance
             fail_to_correct.append(idx)
     
-    print("The id that fail due to the tolerant of retrieved threshold: ", correct_to_fail)
+    print("The length of data: ", len(cmp2["metric_results"]))
+    print("The id that failed in cmp1 but correct in cmp2: ", correct_to_fail)
     print("len of correct_to_fail: ", len(correct_to_fail), "\n")
-    print("The id that performs improved due to more chance to do retrieval: ", fail_to_correct)
+    print("The id that failed in cmp2 but correct in cmp1: ", fail_to_correct)
     print("len of fail_to_correct: ", len(fail_to_correct))
-    print("len of total: ", len(eval0_2["metric_results"]))
+    print("len of total: ", len(cmp1["metric_results"]))
     
     
     # Process eval data
     # eval_data = preprocess_input_data(eval, task=None)
-    example_id = 5
+    example_id = 8
     print("Check out the detail of correct_to_fail through example {id}: ".format(id=example_id))
     
-    print("eval0_2 preds: ", eval0_2["preds"][example_id])
-    print("eval0_5 preds: ", eval0_5["preds"][example_id])
-    print("eval0_2 prompts: ", eval0_2["prompts"][example_id])
-    # print("eval0_5 prompts: ", eval0_5["prompts"][example_id])
-    print("eval0_2 do_retrieve_judge: ", eval0_2["do_retrieve_judge"][example_id])
-    print("eval0_5 do_retrieve_judge: ", eval0_5["do_retrieve_judge"][example_id])
-    print("eval0_2_all_results: ", eval0_2["all_results"][example_id])
-    # print("eval0_5_all_results: ", eval0_5["all_results"][example_id])
-    print("eval0_2 evidence_augmented_inputs: ", eval0_2["evidence_augmented_inputs"][example_id])
-    # print("eval0_5 evidence_augmented_inputs: ", eval0_5["evidence_augmented_inputs"][example_id])
-    print("Ex31 golds: ", eval0_2["golds"][example_id])
+    print("cmp1 preds: ", cmp1["preds"][example_id])
+    print("cmp2 preds: ", cmp2["preds"][example_id])
+    print("cmp1 prompts: ", cmp1["prompts"][example_id])
+    print("cmp2 prompts: ", cmp2["prompts"][example_id])
+    print("cmp1 do_retrieve_judge: ", cmp1["do_retrieve_judge"][example_id])
+    print("cmp2 do_retrieve_judge: ", cmp2["do_retrieve_judge"][example_id])
+    print("cmp1 retrieve_probs: ", cmp1["retrieve_probs"][example_id])
+    print("cmp2 retrieve_probs: ", cmp2["retrieve_probs"][example_id])
+
+    # print("cmp1_all_results: ", cmp1["all_results"][example_id])
+    # print("cmp2_all_results: ", cmp2["all_results"][example_id])
+    # print("cmp1 evidence_augmented_inputs: ", cmp1["evidence_augmented_inputs"][example_id])
+    # print("cmp2 evidence_augmented_inputs: ", cmp2["evidence_augmented_inputs"][example_id])
+    print("Ex31 golds: ", cmp1["golds"][example_id])
+    
+    retrieve_probs_diff = []
+    for question in range(len(cmp1["retrieve_probs"])):
+        if cmp1["retrieve_probs"][question] != cmp2["retrieve_probs"][question]:
+            retrieve_probs_diff.append((question, cmp1["retrieve_probs"][question], cmp2["retrieve_probs"][question]))
+    print("The length of retrieve_probs_diff: ", len(retrieve_probs_diff))
+    print("retrieve_probs_diff: ", retrieve_probs_diff)
     
 
 if __name__ == "__main__":

@@ -46,12 +46,20 @@ def postprocess_answer_option_conditioned(answer):
 
     return answer
 
+def force_add_evidence(prompt, evidences):
+    prompt = prompt + "<paragraph>{0}\n{1}</paragraph>".format(evidences[0]["title"], evidences[0]["text"])
+    return prompt
 
 def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15,
                                      ret_tokens=None, rel_tokens=None, grd_tokens=None, ut_tokens=None,
                                      use_seqscore=False, threshold=0.5,
                                      w_rel=1.0, w_sup=1.0, w_use=0.5, mode="adaptive_retrieval", closed=False):
     results = {}
+    retrieve_prob = 0
+    
+    # Force to add the evidence
+    prompt = force_add_evidence(prompt, evidences)
+    
     if mode != "always_retrieve":
         sampling_params = SamplingParams(
             temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=32016)
@@ -76,11 +84,12 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
                     score_dict[tok] = -100
                 prob = pred_log_probs[0][id]
                 score_dict[tok] = float(prob)
-            do_retrieve = score_dict["[Retrieval]"] / (
-                score_dict["[Retrieval]"] + score_dict["[No Retrieval]"]) > threshold
+            retrieve_prob = score_dict["[Retrieval]"] / (
+                score_dict["[Retrieval]"] + score_dict["[No Retrieval]"])
+            do_retrieve = retrieve_prob > threshold
         else:
             do_retrieve = "[Retrieval]" in pred
-
+    
     evidence_augmented_inputs = []
     if do_retrieve is True:
         evidence_augmented_inputs = [prompt + "[Retrieval]<paragraph>{0}\n{1}</paragraph>".format(
@@ -177,7 +186,7 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
     # Aggregating answers
     if len(results) == 1:
         postprocessed_pred = postprocess_answer_option_conditioned(pred)
-        return postprocessed_pred, results, do_retrieve, evidence_augmented_inputs, 
+        return postprocessed_pred, results, do_retrieve, evidence_augmented_inputs, retrieve_prob
     else:
         answer2score = {}
         if closed is True:
@@ -197,7 +206,7 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
             best_path = sorted(path2score.items(),
                                key=lambda x: x[1], reverse=True)[0][0]
             best_option = results[best_path]["pred"]
-        return best_option, results, do_retrieve, evidence_augmented_inputs
+        return best_option, results, do_retrieve, evidence_augmented_inputs, retrieve_prob
 
 
 def process_data_evidences(demonstration, top_n):
@@ -286,6 +295,7 @@ def main():
                         help="reward weight for overall completeness / utility.")
     parser.add_argument('--mode', type=str, help="mode to control retrieval.",
                         default="default", choices=['adaptive_retrieval', 'no_retrieval', 'always_retrieve'],)
+    parser.add_argument('--data_amount', type=int, default=None, help="amount of data to be used")
     parser.add_argument('--metric', type=str, help="metric to be used during evaluation")
     args = parser.parse_args()
     gpt = args.model_name
@@ -294,6 +304,9 @@ def main():
         input_data = json.load(open(input_path))
     else:
         input_data = load_jsonlines(input_path)
+        
+    if args.data_amount is not None:
+        input_data = input_data[:args.data_amount]
 
     input_data = preprocess_input_data(
         input_data, task=args.task)
@@ -323,20 +336,26 @@ def main():
     all_results = []
     do_retrieve_judge = []
     evidence_augmented_inputs = []
+    retrieve_probs = []
     count = 0
-    progress_bar = tqdm(range(len(input_data[:35])))
-    for i, row in enumerate(input_data[:35]):
+    
+    # Cutoff for debugging
+    input_data = input_data[:100]
+    
+    progress_bar = tqdm(range(len(input_data)))
+    for i, row in enumerate(input_data):
         progress_bar.update(1)
         results = {}
         prompt = PROMPT_DICT["prompt_no_input"].format_map(row)
         _, evidences = process_data_evidences(row, top_n=args.ndocs)
-        pred, results, do_retrieve, evidence_augmented_input = generate(
+        pred, results, do_retrieve, evidence_augmented_input, retrieve_prob = generate(
             prompt, evidences, max_new_tokens=args.max_new_tokens,)
         if type(pred) is str and pred[0] == "#" or pred[0] == ":":
             pred = pred[1:]
         prompts.append(prompt)
         preds.append(pred)
         evidence_augmented_inputs.append(evidence_augmented_input)
+        retrieve_probs.append(retrieve_prob)
         all_results.append(results)
         if do_retrieve is True:
             count += 1
@@ -365,13 +384,13 @@ def main():
             # print("average: {}".format(np.mean(metric_results)))
             final_results = {"preds": preds, "prompts": prompts, "metric_results": metric_results, "all_results": all_results,
                              "golds": golds,  "metric":  args.metric, "metric_mean": np.mean(metric_results), "scores": scores, 
-                             "do_retrieve_judge": do_retrieve_judge, "evidence_augmented_inputs": evidence_augmented_inputs}
+                             "do_retrieve_judge": do_retrieve_judge, "evidence_augmented_inputs": evidence_augmented_inputs, "retrieve_probs": retrieve_probs}
             with open(args.output_file + "_tmp", "w") as outfile:
                 json.dump(final_results, outfile)
 
     final_results = {"preds": preds, "prompts": prompts, "metric_results": metric_results, "all_results": all_results,
                      "golds": golds,  "metric":  args.metric, "metric_mean": np.mean(metric_results), "scores": scores,
-                     "do_retrieve_judge": do_retrieve_judge, "evidence_augmented_inputs": evidence_augmented_inputs}
+                     "do_retrieve_judge": do_retrieve_judge, "evidence_augmented_inputs": evidence_augmented_inputs, "retrieve_probs": retrieve_probs}
     with open(args.output_file, "w") as outfile:
         json.dump(final_results, outfile)
 
