@@ -1,6 +1,6 @@
 #!/bin/bash
 
-conda env create -f environment.yml
+conda env create -f selfrag_environment.yml
 
 conda activate selfrag
 

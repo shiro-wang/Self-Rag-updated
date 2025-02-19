@@ -47,7 +47,18 @@ def postprocess_answer_option_conditioned(answer):
     return answer
 
 def force_add_evidence(prompt, evidences):
-    prompt = prompt + "<paragraph>{0}\n{1}</paragraph>".format(evidences[0]["title"], evidences[0]["text"])
+    # v1 force
+    prompt = prompt + "The question is related to the content: <paragraph>{0}\n{1}</paragraph>.".format(evidences[-1]["title"], evidences[-1]["text"])
+    
+    # v2 force
+    # split_word = "### Response"
+    # prompts = prompt.split(split_word)
+    # prompt = prompts[0] + "### Context:\n<paragraph>{0}\n{1}</paragraph>\n\n".format(evidences[-1]["title"], evidences[-1]["text"]) + split_word + prompts[1]
+    
+    # v2 not force
+    # split_word = "### Response"
+    # prompts = prompt.split(split_word)
+    # prompt = prompts[0] + "### Context:\n\n" + split_word + prompts[1]
     return prompt
 
 def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15,
@@ -57,9 +68,6 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
     results = {}
     retrieve_prob = 0
     
-    # Force to add the evidence
-    prompt = force_add_evidence(prompt, evidences)
-    
     if mode != "always_retrieve":
         sampling_params = SamplingParams(
             temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=32016)
@@ -68,7 +76,7 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
         pred_text = preds[0].outputs[0].text
         pred_log_probs = preds[0].outputs[0].logprobs
         results["no_retrieval"] = pred_text
-
+        
     # save relevance token scores
     if mode == "always_retrieve":
         do_retrieve = True
@@ -89,6 +97,7 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
             do_retrieve = retrieve_prob > threshold
         else:
             do_retrieve = "[Retrieval]" in pred
+    # print("do_retrieve: ", do_retrieve)
     
     evidence_augmented_inputs = []
     if do_retrieve is True:
@@ -97,7 +106,8 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
         sampling_params = SamplingParams(
             temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=5000)
         preds = model.generate(evidence_augmented_inputs, sampling_params, use_tqdm=False)
-
+        # print("evidence_augmented_inputs: ", evidence_augmented_inputs)
+        # print("preds: ", preds[0].outputs[0].text)
         relevance_score_dict = {}
         grd_score_dict = {}
         ut_score_dict = {}
@@ -174,6 +184,7 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
                                      "ut_score_dict": ut_score_dict}
             results["retrieval_{}".format(p_idx)] = {
                 "pred": pred_text, "score": final_score, "ctx": evidences[p_idx], "overall_scores": overall_scores[p_idx]}
+            # print("retrieval_{0}\nprompt: {1} \n pred: {2}\n score: {3}\n".format(p_idx, evidence_augmented_inputs[p_idx], pred_text, final_score))
 
     else:
         sampling_params = SamplingParams(
@@ -297,6 +308,7 @@ def main():
                         default="default", choices=['adaptive_retrieval', 'no_retrieval', 'always_retrieve'],)
     parser.add_argument('--data_amount', type=int, default=None, help="amount of data to be used")
     parser.add_argument('--metric', type=str, help="metric to be used during evaluation")
+    parser.add_argument('--forceret', action='store_true', help="force to retrieve 1 evidence at first")
     args = parser.parse_args()
     gpt = args.model_name
     input_path = args.input_file
@@ -307,10 +319,15 @@ def main():
         
     if args.data_amount is not None:
         input_data = input_data[:args.data_amount]
+    
+    # if args.device is not None:
+    #     os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+    #     print("CUDA_VISIBLE_DEVICES: {}".format(os.environ["CUDA_VISIBLE_DEVICES"]))
 
     input_data = preprocess_input_data(
         input_data, task=args.task)
-    tokenizer = AutoTokenizer.from_pretrained(gpt, padding_side="left")
+    tokenizer = AutoTokenizer.from_pretrained(gpt, padding_side="left", device_map="auto")
+    print("Tokenizer loaded.")
     if args.dtype is not None:
         model = LLM(model=gpt, download_dir=args.download_dir,
                     dtype=args.dtype, tensor_parallel_size=args.world_size,)
@@ -340,16 +357,25 @@ def main():
     count = 0
     
     # Cutoff for debugging
-    input_data = input_data[:100]
+    # check_id = 359
+    # input_data = input_data[check_id:]
     
     progress_bar = tqdm(range(len(input_data)))
+    # progress_bar.update(check_id)
     for i, row in enumerate(input_data):
         progress_bar.update(1)
         results = {}
         prompt = PROMPT_DICT["prompt_no_input"].format_map(row)
         _, evidences = process_data_evidences(row, top_n=args.ndocs)
+        
+        # Forcing to retrieve 1 evidence at first
+        if args.forceret:
+            prompt = force_add_evidence(prompt, evidences)
+        
         pred, results, do_retrieve, evidence_augmented_input, retrieve_prob = generate(
             prompt, evidences, max_new_tokens=args.max_new_tokens,)
+        # print(f"check_id:{check_id + i}",prompt)
+        # print(pred)
         if type(pred) is str and pred[0] == "#" or pred[0] == ":":
             pred = pred[1:]
         prompts.append(prompt)
